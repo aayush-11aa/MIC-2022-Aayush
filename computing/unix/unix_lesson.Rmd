@@ -210,11 +210,11 @@ r-- Other has Read permission
 ```{bash}
 ls *Rmd
 ```
-
+# everything that starts with u
 ```{bash}
 ls u*
 ```
-
+#anything that has .R followed by any two letters
 ```{bash}
 ls *.R??
 ```
@@ -306,10 +306,11 @@ ls
 ```
 
 ### Navigating between directories
-
+# ../ takes you one directory before the current one
 
 ```{bash}
-cd a/b/
+cd ../
+pwd
 ls
 
 ```
