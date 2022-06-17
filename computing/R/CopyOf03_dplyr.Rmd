@@ -1,0 +1,258 @@
+---
+title: "Quantitative Methods for HIV Researchers"
+subtitle: "Dplyr"
+author: "Janice M. McCarthy"
+date: "November 5, 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+setwd("~/2022-mic/computing/R")
+```
+# Manipulating data frames with `dplyr`
+
+Once we have our data into a tidy format, we can use the functions in the `dplyr` packages to manipulate the rows and columns, get summaries or perform other operations on the data.
+
+## Select
+
+The `select` function extracts columns from the data frame. It can be used with explicit column names or 'helper' functions.
+
+```{r}
+starwars %>% head()
+
+starwars %>%
+select(name, birth_year, species) %>%
+head(3)
+
+starwars %>%
+select(name, age=birth_year, species) %>%
+head(3)
+
+starwars %>% 
+select(-name, -birth_year, -species) %>% 
+head(3)
+
+starwars%>% 
+select(starts_with('s')) %>%
+head(3)
+
+starwars%>% 
+select(matches("[aeiou]{2,}")) %>%
+head(3)
+
+starwars%>% 
+select(name, age=birth_year, mass) %>%
+arrange(age) %>%
+head(3)
+
+starwars%>% 
+select(name, age=birth_year, mass) %>%
+arrange(desc(age)) %>%
+head(3)
+
+starwars%>% 
+select(name, age=birth_year, mass) %>%
+arrange(age) %>%
+head(5)
+
+starwars%>% 
+select(name, age=birth_year, mass) %>%
+arrange(age, mass) %>%
+head(5)
+
+starwars%>% 
+select(name, age=birth_year, mass) %>%
+top_n(age, n=3)
+```
+
+### Exercises
+
+Use the built-in data set `diamonds` to do the following:
+
+1. Select only the `x, y` and `z` columns
+2. Select all columns except `price`
+3. Find the top 5 most expensive diamonds
+4. Find the 5 most least expensive diamonds and print only their carat, cut, color and clarity
+5. Find the 10 most expensive diamonds with the largest carat size
+```{r}
+diamonds %>% head()
+
+diamonds %>%
+select(x, y, z) %>%
+head(3)
+
+diamonds %>% 
+select(-price) %>% 
+head(3)
+
+#starwars%>% 
+#select(starts_with('s')) %>%
+#head(3)
+
+#starwars%>% 
+#select(matches("[aeiou]{2,}")) %>%
+#head(3)
+
+diamonds%>% 
+arrange(desc(price)) %>%
+head(5)
+
+diamonds%>% 
+select(carat, cut, color, clarity, price) %>%
+arrange(desc(price)) %>%
+head(5)
+
+#starwars%>% 
+#select(name, age=birth_year, mass) %>%
+#arrange(age) %>%
+#head(5)
+
+diamonds%>% 
+arrange(desc(carat), desc(price)) %>%
+head(5)
+
+#starwars%>% 
+#select(name, age=birth_year, mass) %>%
+#top_n(age, n=3)
+```
+## Filter 
+
+The `filter` function selects rows of a data frame according to a given criteria.
+
+```{r}
+starwars %>%
+filter(birth_year > 100)
+
+starwars %>%
+filter((birth_year >= 600) | (name == 'Dooku')) # | stands for 'or' statement
+
+starwars %>%
+filter((birth_year >= 600) | (name == 'Dooku')) %>%
+select(name, age=birth_year, homeworld)
+
+starwars %>%
+filter(birth_year > 100 , sex=='male') # , stands for and statement
+
+starwars %>%
+filter(str_detect(homeworld, "in")) %>% #look into the column homeworld and show string with "in" in them
+select(name, homeworld) %>%
+head(3)
+```
+### Exercises
+Use the `diamonds` data set to do the following:
+
+1. Find all diamonds whose cut is "Ideal"
+2. Find all diamonds with carat > 2
+3. Find all diamonds with carat > 2 and cut "Premiun" or "Ideal"
+4. Find all diamonds with cut better than "Fair"
+5. Use `filter` with `str_detect` to select all diamonds whose cut is 'Good' or 'Very Good'
+```{r}
+diamonds %>%
+filter(cut == 'Ideal')
+
+diamonds %>%
+filter(carat > 2)
+
+diamonds %>%
+filter((carat > 2), (cut == 'Premium') | (cut == 'Ideal')) # | stands for 'or' statement
+
+diamonds %>%
+filter(cut != 'Fair')
+
+diamonds %>%
+filter(str_detect(cut, "Good"))
+
+
+head(diamonds$cut) # tells you the ranking of any text categorical variables
+
+diamonds %>% select(cut) %>% str()
+
+```
+## Mutate and transmutate
+
+These functions perform operations across columns.
+#mutate- adds onto dataframe; transmute- just make new columns and drop others
+
+```{r}
+starwars%>% 
+select(name, age=birth_year, height, mass) %>%
+head(3)
+
+starwars%>% 
+select(name, age=birth_year, height, mass) %>%
+mutate(bmi=mass/(height/100)^2, obese=bmi>30) %>%
+head(3)
+
+starwars%>% 
+select(name, age=birth_year, height, mass) %>%
+transmute(bmi=mass/(height/100)^2, obese=bmi>30) %>%
+head(3)
+
+starwars %>%
+transmute_if(is_character, str_to_upper) %>% # if the column is a character then make the string uppercase
+head(3)
+
+starwars %>%
+select_at(c("birth_year", "height", "mass")) %>% #
+head(3) 
+
+starwars %>%
+transmute_at(c("birth_year", "height", "mass"), ~ . + 1) %>%
+head(3)
+```
+### Exercises
+
+1. Add a new column to the `diamonds` data frame called "Class" that is 1 if the cut is "Ideal" or "Premium" **and** the carat is larger than 2, 0 if not.
+
+```{r}
+diamonds %>%
+  ifelse(((cut == "Ideal" | cut == "Premium"), carat > 2), mutate (Class == 1), mutate (Class == 0)) %>%
+
+head(10)
+## Group by and summarize
+```
+
+```{r}
+starwars %>%
+summarize(avg_mass = mean(mass, na.rm=TRUE),
+          median_age=median(birth_year, na.rm=TRUE)) # always a good idea to have the condition for removing entries containing 'na'
+
+starwars %>%
+summarize_if(is.numeric, mean, na.rm=TRUE)
+
+starwars %>%
+summarize_if(is.numeric, list(mean = mean, median = median), na.rm=TRUE)
+ # mean = mean assigns the column name as 'mean'
+starwars %>%
+group_by(homeworld) %>%
+summarize(avg_mass=mean(mass, na.rm=T)) %>%
+view() # shows the whoel list: one of the entries is NA
+
+starwars %>%
+group_by(homeworld) %>%
+summarize(avg_mass=mean(mass, na.rm=T)) %>%
+filter(!is.na(homeworld)) %>%
+head(3)
+
+```
+
+### Exercises
+
+1. Group the diamonds by cut and find the mean in each category.
+2. Count the number of diamonds of each color.
+
+```{r}
+
+
+diamonds %>%
+group_by('cut') %>%
+summarize_if(is.numeric, mean) %>%
+head(10)
+
+diamonds %>%
+  group_by(color) %>%
+  summarize(count = n())
+
+```

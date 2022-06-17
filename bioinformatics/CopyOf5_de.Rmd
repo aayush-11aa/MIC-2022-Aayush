@@ -1,0 +1,485 @@
+---
+title: "Differential Expression (DE) Analysis"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+  md_document:
+    variant: markdown_github
+    toc: true
+---
+```{r prereqs}
+knitr::opts_chunk$set(echo = T, message = FALSE, warning = FALSE)
+stdt <- date()
+
+# Packages
+library(tidyverse)
+library(Seurat)
+library(cowplot)
+library(patchwork)
+
+# Paths
+wd <- "/hpc/group/chsi-mic-2022"
+intermeddir <- file.path(wd, "intermed")
+```
+
+**Goal of this workshop:** Learn how to perform differential expression (DE)
+between clusters
+
+**What's covered in this workshop:**
+- Identify Differentially Expressed Genes (DEGs) between clusters
+- Re-name clusters
+- Verify manuscript DE results
+
+**Data source:** 
+Christian et al. 2021 Cell Reports (https://doi.org/10.1016/j.celrep.2021.109118)
+
+Note that the Seurat - Guided Clustering Tutorial (https://satijalab.org/seurat/articles/pbmc3k_tutorial.html) includes a lot of overlapping information.
+
+**METHOD DETAILS, Single-cell RNA-seq analysis, page e4**
+
+- Pre-processing: "Raw short reads were demultiplexed, filtering and mapped to mouse genome GRCm38/mm10 using cellranger v2.02."
+
+- QC: "The gene count matrices from cellranger were subjected to quality control, pre-processing and clustering using the R Seurat 2.3.4 package (Butler et al., 2018). Low-quality cells that had less than 200 expressed genes and more than 5% mitochondrial genes were filtered out."
+
+- Analysis: "Gene counts were scaled to total gene expression and percentage of mitochondrial genes with a scaling factor of 10,000, and then log-transformed. The high dimensional data for each sample were reduced by PCA and t-Distributed Stochastics Neighbor Embedding (tSNE). We used the FindCluster function to group clusters in each sample with a resolution of 0.6. Differential expressed genes (DEGs) were identified using the Wilcoxon rank-sum test."
+
+## 0. Load data
+
+This tutorial will be based on the pre-processed Seurat object used in the 
+tutorial on clustering and cell-type inference (see clustering_annotation.Rmd).
+
+
+```{r loaddata}
+infile <- file.path(intermeddir, "seulist-drc.rds")
+tools::md5sum(infile)
+seulist.drc <- readRDS(infile)
+```
+
+## 1. Identify DEGs between clusters
+
+*METHOD DETAILS, Single-cell RNA-seq analysis, page 4e*: "Differentially expressed genes (DEGs) were identified using the Wilcoxon rank-sum test."
+
+This tutorial will be based on the Tem data set.
+
+```{r temmd}
+tem <- seulist.drc[["Tem"]]
+tem@meta.data %>% head()
+```
+
+The DE analysis will used the inferred clustering column seurat_clusters.
+Specifically, we will consider DE analysis between cluster {0} and clusters
+{1,2,3,4,5}.
+
+```{r}
+tem@meta.data %>%
+  pull(seurat_clusters) %>%
+  unique()
+```
+
+The Seurat FindMarkers() function can be used to conduct differential expression
+analysis between cluster (or group) variables in the meta data slot of a
+Seurat object. 
+For the purpose of trying to reproduce the manuscript results, we will assume 
+that the authors have used the defaults. Here are a few default arguments to be aware 
+of:
+
+- **min.pct = 0.1** : Do not test genes that make up fewer than 0.1 fraction 
+(10% ?) of the total reads in either of the populations tested. Meant to speed 
+up the function by not testing genes that are very infrequently expressed. 
+Default is 0.1 
+
+- **max.cells.per.ident = Inf** : "This will downsample each identity class to 
+have no more cells than whatever this is set to. While there is generally going 
+to be a loss in power, the speed increases can be significant and the most 
+highly differentially expressed features will likely still rise to the top" 
+(https://satijalab.org/seurat/articles/pbmc3k_tutorial.html)
+
+- **logfc.threshold = 0.25** "Limit testing to genes which show, on average, 
+at least X-fold difference (log-scale) between the two groups of cells. 
+Default is 0.25. Increasing logfc.threshold speeds up the function, but can 
+miss weaker signals." (Seurat help)
+
+- **test.use = "wilcox** Denotes which test to use; 
+see Seurat help for alternatives.
+
+- **min.cells.group = 3** "Minimum number of cells in one of the groups" 
+(Seurat help)
+
+- **ident.2** "A second identity class for comparison; if NULL, use all 
+other cells for comparison" (Seurat help)
+
+### DE analysis for specific cluster
+
+
+```{r}
+cluster0.markers <- FindMarkers(tem, ident.1 = 0) # min.pct = 0.1 by default
+cluster0.markers %>%
+  arrange(-avg_log2FC) %>%
+  head(n = 5)
+```
+
+The seurat_clusters variable is the active ident in the Tem object. Had it not,
+it would have to be set using the Seurat Ident() function
+
+
+**Examine Wilcoxon Rank Sum test** 
+
+Next, we will attempt to reproduce the FindMarker() results
+for Bcl2 using standard R functions.
+
+
+First we specify the gene of interest.
+
+```{r}
+# Select the gene Bcl2
+sel.gene <- "Bcl2"
+```
+
+Next, we subset the Tem object according to inferred cluster (0 vs others):
+
+```{r}
+# subset cells in cluster 0
+tem.0 <- subset(x = tem, idents = "0")
+ncol(x = tem.0) # 317 cells
+unique(Idents(tem.0)) # check that these are all from the 0 cluster
+```
+```{r}
+# subset cells in any other cluster
+tem.else <- subset(x = tem, idents = "0", invert = TRUE)
+ncol(x = tem.else) # 1140 cells
+unique(Idents(tem.else)) # check that these are all from clusters other than 0
+```
+
+This step extracts the expression values from the two objects
+```{r}
+# extract scaled expression values
+expr.0 <- GetAssayData(object = tem.0, slot = "data")
+expr.else <- GetAssayData(object = tem.else, slot = "data")
+```
+```{r}
+# Extract expression values for the gene Bcl2
+expr.0.sel <- expr.0[rownames(expr.0) == sel.gene, ]
+expr.else.sel <- expr.else[rownames(expr.else) == sel.gene, ]
+length(expr.0.sel)
+length(expr.else.sel)
+```
+
+Now, we reproduce the the fractions of cells with expression for cluster 0 and other clusters, i.e., `pct.1` and `pct.2`,
+
+```{r}
+pct.1 <- mean(expr.0.sel > 0)
+pct.2 <- mean(expr.else.sel > 0)
+
+pct.1
+pct.2
+```
+
+Next, we reproduce the average log2 FC `avg_log2FC`,
+```{r}
+avg.0 <- mean(expm1(expr.0.sel)) + 1
+avg.else <- mean(expm1(expr.else.sel)) + 1
+avg.log2FC <- log2(avg.0) - log2(avg.else)
+
+avg.log2FC
+```
+
+Next, we generate the P-value using the R wilcox.test().
+
+```{r}
+# Perform the Wilcoxon Rank Sum test
+wilcox.test(
+  x = expr.0.sel,
+  y = expr.else.sel,
+  alternative = "two.sided"
+) -> wtest
+
+wtest$p.value
+```
+
+Next, we calculate the adjusted P-value using Bonferroni correction,
+
+```{r}
+n.genes.tested <- nrow(tem)
+min(wtest$p.value * n.genes.tested, 1)
+```
+
+
+
+The results above match the values provided by FindMarker()
+```{r}
+cluster0.markers %>%
+  rownames_to_column(var = "gene_name") %>%
+  filter(gene_name == sel.gene)
+# p-value = 2.175929e-28
+```
+
+
+
+Exercise: Repeat the last analysis for Nkg7
+
+```{r}
+# Select the gene Nkg7
+sel.gene <- "Nkg7"
+```
+
+```{r}
+# Extract expression values for the gene
+expr.0.sel <- expr.0[rownames(expr.0) == sel.gene, ]
+expr.else.sel <- expr.else[rownames(expr.else) == sel.gene, ]
+length(expr.0.sel)
+length(expr.else.sel)
+```
+
+```{r}
+pct.1 <- mean(expr.0.sel > 0)
+pct.2 <- mean(expr.else.sel > 0)
+
+pct.1
+pct.2
+```
+
+```{r}
+avg.0 <- mean(expm1(expr.0.sel)) + 1
+avg.else <- mean(expm1(expr.else.sel)) + 1
+avg.log2FC <- log2(avg.0) - log2(avg.else)
+
+avg.log2FC
+```
+
+```{r}
+# Perform the Wilcoxon Rank Sum test
+wilcox.test(
+  x = expr.0.sel,
+  y = expr.else.sel,
+  alternative = "two.sided"
+) -> wtest
+
+wtest$p.value
+```
+
+```{r}
+n.genes.tested <- nrow(tem)
+min(wtest$p.value * n.genes.tested, 1)
+```
+
+```{r}
+cluster0.markers %>%
+  rownames_to_column(var = "gene_name") %>%
+  filter(gene_name == sel.gene)
+# p-value = 0.51
+```
+
+
+
+### DE Analysis for all clusters
+
+The Seurat FindAllmarkers() function can be used to conducted DE analysis
+for every cluster.
+
+```{r DEall}
+all.markers <- FindAllMarkers(tem)
+```
+
+Show the top 5 up-regulated (by FC) genes in each cluster
+
+```{r}
+all.markers %>%
+  group_by(cluster) %>%
+  slice_max(n = 3, order_by = avg_log2FC) %>%
+  arrange(cluster, -avg_log2FC)
+# note that this uses slice_max() and avg_log2FC is arranged from high to low with "-"
+```
+
+Show the top 5 down-regulated (by FC) genes in each cluster
+
+```{r}
+all.markers %>%
+  group_by(cluster) %>%
+  slice_min(n = 3, order_by = avg_log2FC) %>%
+  arrange(cluster, avg_log2FC)
+# note that this uses slice_min() and avg_log2FC is arranged from low to high
+```
+
+Exercise: How would you get the top down- or up-regulated
+genes according to FC?
+
+Visualize the top 5 up- and down-regulated genes in a heatmap
+```{r}
+all.markers %>%
+  group_by(cluster) %>%
+  slice_max(n = 5, order_by = avg_log2FC) -> upGenes
+all.markers %>%
+  group_by(cluster) %>%
+  slice_min(n = 5, order_by = avg_log2FC) -> downGenes
+upGenes %>%
+  bind_rows(downGenes) -> topGenes
+
+DoHeatmap(tem, features = topGenes$gene)
+# Clusters 0, 1, 2 correspond to p1?
+# Cluster 3 corresponds to p2?
+# Cluster 4 corresponds to p3?
+# Cluster 5 corresponds to p4?
+```
+
+Investigate a specific gene by overlaying gene expression on top of the tSNE plot as in the Fig2 B-D plots (page 5).
+
+Example 1:
+
+```{r}
+# remember this visualization tool from above too
+plot_grid(
+  DimPlot(tem, reduction = "tsne"),
+  FeaturePlot(tem, features = c("Hmgb2")),
+  nrow = 1
+)
+```
+Example 2 (Two genes):
+
+```{r}
+# remember this visualization tool from above too
+plot_grid(
+  DimPlot(tem, reduction = "tsne"),
+  FeaturePlot(tem, features = c("Hmgb2", "Bcl2")),
+  nrow = 2
+)
+```
+Example 3 (Use patchwork composition)
+
+```{r}
+DimPlot(tem, reduction = "tsne")  /
+  (FeaturePlot(tem, features = c("Bcl2"))| FeaturePlot(tem, features = c("Hmgb2")))
+```
+
+Example 3 (Use patchwork composition with spacer)
+
+```{r}
+(DimPlot(tem, reduction = "tsne") | plot_spacer()) /
+  (FeaturePlot(tem, features = c("Bcl2"))| FeaturePlot(tem, features = c("Hmgb2")))
+```
+
+
+Investigate a specific gene by generating violin plots. By default, the "expression level" is based on values in the "data" slot. Alternatively, you can plot counts from the "counts" slot instead.
+```{r}
+VlnPlot(tem, features = c("Hmgb2"), split.by = "seurat_clusters")
+# you can plot raw counts as well
+VlnPlot(tem, features = c("Hmgb2"), slot = "counts")
+VlnPlot(tem, features = c("Hmgb2"), slot = "counts", log = TRUE)
+```
+
+## 2. Redefining clusters
+
+Next, we attempt to redefine clusters based on biomarkers and study aims (Fig 2)
+
+Our understanding (see *RESULTS, scRNA-seq dissects intratumoral TEff/EM heterogeneity, page 4-5*)
+is that the the biomarkers were defined as follows
+
+p1 = Clusters 0, 1, 2 
+p2 = Cluster 3 
+p3 = Cluster 4
+p4 = Cluster 5
+
+We can add this information to the tem Seurat object metadata
+```{r}
+new.cluster.ids <- c(
+  "p1", "p1", "p1",
+  "p2",
+  "p3",
+  "p4"
+)
+levels(tem)
+names(new.cluster.ids) <- levels(tem)
+tem <- RenameIdents(tem, new.cluster.ids)
+```
+We can verify the 
+
+```{r}
+table(orig = tem@meta.data$seurat_clusters, new = Idents(tem))
+```
+
+Based on these updated classifications, we can re-annotate the tSNE plot
+```{r}
+DimPlot(tem, reduction = "tsne", label = TRUE, pt.size = 0.5)
+```
+
+
+## 3. Verify manuscript DE results
+
+### DE between p2 and p4
+
+*RESULTS, scRNA-seq dissects intratumoral TEff/EM heterogeneity, page 4-5*?
+"Comparing p2 to p4, the density of Runx3- and Id2-expressing cells was slightly lower in p2. ...This was accompanied by an opposite pattern of Id3, a transcription factor whose expression is crucial for effector memory development (Yang et al., 2011), which is absent in p4 (Figure 2C)."
+
+Now that we have defined clusters p2 and p4, we can perform DE analyses between these cell populations as in the manuscript.
+```{r}
+p4v2markers <- FindMarkers(tem, ident.1 = "p4", ident.2 = "p2", min.pct = 0.25)
+```
+Examine up-regulated genes in p4 as compared to p2
+```{r}
+p4v2markers %>%
+  slice_max(n = 5, order_by = avg_log2FC) %>%
+  arrange(-avg_log2FC) -> upGenes
+upGenes
+```
+Examine down-regulated genes in p4 as compared to p2
+```{r}
+p4v2markers %>%
+  slice_min(n = 5, order_by = avg_log2FC) %>%
+  arrange(avg_log2FC) -> downGenes
+downGenes
+```
+
+*RESULTS, CXCR6 expression defines a unique subpopulation of TEff/EMs, page 9*
+"The elevated Cxcr6 expression in p4 was associated with enhanced Pdcd1 and reduced IL7r expression, in direct opposition to p2 (Figure 5B)."
+
+```{r}
+p4v2markers %>%
+  rownames_to_column(var = "gene") %>%
+  filter(gene == "Pdcd1")
+```
+
+```{r}
+p4v2markers %>%
+  rownames_to_column(var = "gene") %>%
+  filter(gene %in% c("Il7r", "Il18r1"))
+```
+
+
+*RESULTS, CXCR6 expression defines a unique subpopulation of TEff/EMs, page 9*
+"We virtually sorted out these two populations of cells [p2 vs p4] and compared their gene expression at the transcriptomic level (Figure 5C). The differential expression of Nkg7 and Klrc/d family members suggested that these are highly active effector T cells, as seen in the high expression of effector molecules such as Gzmb." And from Fig 5 legend: "T cell activation markers Gzmb, Klrc1/2, and Klrd1 are upregulated in TEFF/TEM p4".
+
+```{r}
+p4v2markers %>%
+  rownames_to_column(var = "gene") %>%
+  filter(gene %in% c("Gzmb", "Klrc1", "Klrc2", "Klrd1"))
+```
+
+
+
+#### Additional results statements to evaluate using DE
+
+*RESULTS, scRNA-seq dissects intratumoral TEff/EM heterogeneity, page 4-5*
+
+- "The effector molecules Ifng and GzmB were highly expressed in p4, had heterogeneous expression in p1 and p3, but were largely absent from p2. Similar expression patterns were applied to well-known effector surface markers for cytolytic T cells such as Klrc1 and Nkg7 (Figure 2B)."
+- "All four subsets highly expressed the transcription factor Runx3..., as well as Id2... "
+- "Bcl2, a transcription factor for T cell survival in the effector and memory phases, was abundant in most sorted TEff/EM populations except p3. "
+- "After assessing the cell-cycle programs, we determined that p3 was a highly proliferative subset, as made evident by the expression of genes restrictively expressed in S and M phases, such as Ccnb2, Cdk1, and Mki67 (Figure 2D). 
+
+*RESULTS, Tumor and distant mucosa TRMs comprise two distinct populations that resemble either TEMs or TCMs, page 5-6*
+
+- "As expected, the tumor and distant mucosa TRM populations showed high expression of Itgae (CD103) and low expression of S1PR1, con- firming their tendency to reside within the tissue (Figure S4)."
+- "Notably, the binary expression of Lgals3 (galectin-3) could distinguish TEMs (p1 of TEff/EM) from TCMs."
+
+*RESULTS, CXCR6 expression defines a unique subpopulation of TEff/EMs, page 9*
+
+- " Among all of the TEff/EM populations, S1pr1 expression was silenced in TEff/EM p4, suggesting that this may be a population that lacks the potential to egress."
+
+- "In p4, compared to other chemokine receptors, Cxcr6 was highly expressed; compared to the other 3 populations, p4 was the only population that preferentially upregulated Cxcr6 (Figure 5A)."
+
+- "...However, for T cells in TEff/EM p2, we found that the upregulation of IL7r was associated with IL18r1 (Figure 5C). 
+
+- "This analysis illustrated that these CXCR6+ effector cells were quite unique: on the one hand, they could be labeled as terminally exhausted cells (Wherry et al., 2007) based on their elevated expression of Pdcd1, Nr4a1 (Liu et al., 2019), Lag3, and Havcr2 (Tim-3).." And from Fig 5 legend: "Classical exhaustion markers Nr4a1, Lag3, and Havcr2 were upregulated in the tumor TEff/EM p4 population."
+
+```{r sessioninfo}
+sessionInfo()
+```

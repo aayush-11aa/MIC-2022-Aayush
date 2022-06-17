@@ -24,9 +24,9 @@ datadir <- "/hpc/group/chsi-mic-2022/data/Christian2021CellReports/"
 
 # Set output directory path (be sure that this directory exists and that
 # to have write permission to it).
-procdir <- "/work/owzar001/MIC2022/PROC/" 
+procdir <- "/work/aa732/MIC2022/PROC/"
 ```
-
+# make sure to change the output directory
 **Goal of this workshop:** Learn how to import multiple cellranger output data sets into R, perform QC and transform UMI counts.
 
 **What's covered in this workshop:**
@@ -338,7 +338,7 @@ tem@assays$RNA@counts[1:5, 1:5]
 Note that the data slot is identical to the counts slot
 
 ```{r}
-identical(tem@assays$RNA@data, tem@assays$RNA@counts)
+identical(tem@assays$RNA@data, tem@assays$RNA@counts) # check if the entries are identical
 ```
 
 ### Normalize the counts
@@ -357,14 +357,14 @@ Note that while the count slot remains unchanged,
 
 ```{r}
 identical(tem.s@assays$RNA@counts, tem@assays$RNA@counts)
-tem.s@assays$RNA@counts[1:5, 1:5]
+tem.s@assays$RNA@counts[1:5, 1:5] 
 ```
 
 the data object has been modified
 
 ```{r}
 identical(tem.s@assays$RNA@data, tem@assays$RNA@data)
-tem.s@assays$RNA@data[1:10, 1:10] 
+tem.s@assays$RNA@data[1:10, 1:10]
 ```
 
 The following function can be used to normalize all objects in the list.

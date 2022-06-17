@@ -1,0 +1,301 @@
+---
+title: "QC scRNAseq"
+output:
+  md_document:
+    variant: markdown_github
+    toc: true
+  html_document:
+    toc: true
+    toc_float: true
+---
+```{r prereqs}
+knitr::opts_chunk$set(echo = T, message = FALSE, warning = FALSE)
+stdt<-date()
+
+# Libraries
+library(tidyverse)
+library(Seurat)
+
+# Paths
+cr.outs <- "/hpc/group/chsi-mic-2022/data/pbmc8k/pbmc8k/outs"
+#intermeddir <- "/hpc/group/chsi-mic-2022/intermed"
+Sys.setenv(
+  intermeddir="/work/aa732/MIC2022/PROC/intermeddir/"
+  )
+```
+
+**Goal of this workshop:** Learn how to QC scRNAseq data
+
+**What's covered in this workshop:**
+- Convert cellranger output to a Seurat object
+- Calculate mitrochondiral gene percentage
+- Learn data quality attributes
+- Exclude data from low-quality cells
+
+**Data source:** 
+scRNA-seq dataset of 8K human peripheral blood mononuclear cells (PBMCs) freely available from 10X Genomics (https://support.10xgenomics.com/single-cell-gene-expression/datasets/2.1.0/pbmc8k)
+
+## Convert cellranger output to a Seurat object
+
+We can use code like this to load the cell ranger output and store it in a Seurat object.
+
+```{r}
+Read10X_h5(file.path(cr.outs, "filtered_feature_bc_matrix.h5")) %>% 
+  CreateSeuratObject() -> pbmc8k
+pbmc8k
+```
+
+Alternatively, you can load all the files inside the `filtered_feature_bc_matrix` folder
+Here are the contents of this folder
+```{r}
+dir(file.path(cr.outs, "filtered_feature_bc_matrix"))
+```
+Here is how you can load the data into a Seurat object.
+```{r}
+Read10X(file.path(cr.outs, "filtered_feature_bc_matrix")) %>% 
+  CreateSeuratObject() -> pbmc8k.alt
+pbmc8k.alt
+```
+
+Since these objects are large, I am going to remove the alternative object from the R environment
+```{r}
+rm(pbmc8k.alt)
+```
+
+## Calculate mitrochondiral gene percentage
+
+First, take look at the existing cell-level metadata in one of the seurat objects
+```{r}
+head(pbmc8k@meta.data)
+```
+
+orig.ident = sample name
+nCount_RNA = number of reads per cell
+nFeature_RNA = number of gene features per cell
+
+The rownames are gene symbols. Investigating the names a bit more, the mitochondrial genes can be identified by the prefix "mt-"
+```{r}
+curr.count <- pbmc8k@assays$RNA@counts
+rownames(curr.count)[1:10]
+mtgenes <- rownames(curr.count)[grepl("^MT-", rownames(curr.count))] # these are the mitochondrial genes!
+mtgenes
+
+pbmc8k[mtgenes,]
+dim(mtgenes)
+
+```
+
+Add the mitochondrial percentage for 1 seurat object
+```{r}
+head(pbmc8k@meta.data)
+pbmc8k[["percent.mt"]] <- PercentageFeatureSet(pbmc8k, pattern = "^MT-")
+head(pbmc8k@meta.data)
+
+
+
+```
+
+
+## Learn data quality attributes, Initial QC
+
+Seurat has a built-in function to plot the three key aspects of data quality that we need to check. Below we will explain each attribute and show how to generate similar plots using ggplot.
+```{r}
+VlnPlot(pbmc8k, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+```
+
+### Number of molecules aka reads detected per cell (nCount)
+
+- A very low number of reads per cell could indicate a sequencing failure. Reads per cell should generally be above 500 (https://hbctraining.github.io/scRNA-seq/lessons/04_SC_quality_control.html).
+```{r}
+cl <- 500 # min number of total reads per cell (nCount is analogous to library size or total number of reads)
+```
+
+- A very high number of reads per cell could indicate more than one cell was actually sequenced. If more than one cell was sequenced with the same UMI, this is called a "doublet" or "multiplet". These will show up as a clump on the upper tail of the nCount distribution. 
+
+Here is a plot that reproduces the default violin plot that is similar to from Seurat::VlnPlot(). Here we have added a blue dashed line to show the minimum expected total reads per cell (500).
+```{r}
+ggplot(pbmc8k@meta.data, aes(x = orig.ident, y = nCount_RNA))+
+	geom_jitter(shape = 16, position = position_jitter(0.2))+
+	geom_violin(trim = F, alpha = 0.7) +
+  labs(x = "Group", y = "nCount") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 30, hjust=1),
+        strip.text = element_text(size = 6)) +
+  geom_hline(yintercept = cl, color = "blue", linetype = "dashed")
+```
+
+It is sometimes more informative to view the data in a histogram. Here we have added a blue dashed line to show the minimum expected total reads per cell (500).
+```{r}
+ggplot(pbmc8k@meta.data, aes(x = nCount_RNA)) +
+  geom_histogram(bins = 50) +
+  geom_vline(xintercept = c(cl), 
+             color = "blue", linetype = "dashed") +
+  labs(x = "nCount", y = "Frequency") +
+  scale_x_continuous(breaks = seq(0, 10, 1)) +
+  theme_classic()
+```
+
+Here we have log-transformed nCount on the x-axis to get another view of the distribution. For these data, we do not see a small shoulder to right of the major peak so we did not filter by an upper nCount threshold.
+
+```{r}
+ggplot(pbmc8k@meta.data, aes(x = log(nCount_RNA))) +
+  geom_histogram(bins = 50) +
+  geom_vline(xintercept = c(log(cl)), 
+             color = "blue", linetype = "dashed") +
+  labs(x = "Log(nCount)", y = "Frequency") +
+  scale_x_continuous(breaks = seq(0, 10, 1)) +
+  theme_classic()
+```
+
+### Number of gene features detected per cell (nFeature)
+
+- A very low number of gene features per cell could indicate a library prep or sequencing failure. Features per cell should generally be above 300 (https://hbctraining.github.io/scRNA-seq/lessons/04_SC_quality_control.html).
+
+```{r}
+fl <- 300 # min number of gene features per cell
+```
+
+Here is a plot that reproduces the default violin plot that is similar to from Seurat::VlnPlot(). Here we have added a blue dashed line to show the minimum expected total features per cell (300).
+```{r}
+ggplot(pbmc8k@meta.data, aes(x = orig.ident, y = nFeature_RNA))+
+	geom_jitter(shape = 16, position = position_jitter(0.2))+
+	geom_violin(trim = F, alpha = 0.7)+
+  labs(x = "Group", y = "nFeature") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 30, hjust=1),
+        strip.text = element_text(size = 6)) +
+  geom_hline(yintercept = fl, color = "blue", linetype = "dashed")
+```
+
+Here we have plotted the histogram with log-transformed nFeatures on the x-axis to get another view of the distribution. For these data, we do not see a small shoulder to the left of the major peak so we kept the minimum nFeatures threshold of 300.
+```{r}
+ggplot(pbmc8k@meta.data, aes(x = log(nFeature_RNA))) +
+  geom_histogram(bins = 100) +
+  geom_vline(xintercept = log(fl), 
+             color = "blue", linetype = "dashed") +
+  scale_x_continuous(breaks = c(seq(0, 20, 1), round(log(fl), digits = 2)) ) +
+  labs(x = "log(nFeature)", y = "Frequency") +
+  theme_classic()
+```
+
+### Percentage of mitochondrial genes per cell (MT%)
+
+- A high percentage of mitochondrial genes (MT%) indicates a cell may be dead or dying based on the expectation that, if a cell is ruptured, non-MT genes will leak out first and increase the relative abundance of MT genes. Often, researchers use 5 MT% as an upper threshold.
+
+```{r}
+ml <- 5 # max MT%
+```
+
+Here is a plot that reproduces the default violin plot that is similar to from Seurat::VlnPlot(). Here we have added a blue dashed line to show the minimum MT% (5).
+```{r}
+ggplot(pbmc8k@meta.data, aes(x = orig.ident, y = percent.mt)) +
+  geom_jitter(shape=16, position=position_jitter(0.2))+
+	geom_violin(trim=FALSE, alpha=0.7)+
+  labs(x = "Group", y = "MT%") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 30, hjust=1),
+        strip.text = element_text(size = 6)) +
+  geom_hline(yintercept = ml, color = "blue", linetype = "dashed")
+```
+
+Here we have plotted the histogram with log-transformed MT% on the x-axis to get another view of the distribution. For these data, we do not see a small shoulder to the right of the major peak so we kept the maximum MT% threshold of 5.
+```{r}
+ggplot(pbmc8k@meta.data, aes(x = log(percent.mt))) +
+  geom_histogram(bins = 100) +
+  geom_vline(xintercept = log(ml), 
+             color = "blue", linetype = "dashed") +
+  scale_x_continuous(breaks = c(seq(0, 20, 1), round(log(ml), digits = 2)) ) +
+  labs(x = "log(MT%)", y = "Frequency") +
+  theme_classic()
+```
+
+This plot shows how the MT% threshold influences the number of cells that are kept versus removed. This is especially useful if one encounters a dataset in which higher than normal %MT values.
+
+```{r}
+data.frame(threshold = 1:40) %>%
+  full_join(pbmc8k@meta.data, by = character()) %>%
+  mutate(type = ifelse(percent.mt < threshold, "Kept", 
+                       ifelse(percent.mt >= threshold, "Removed", NA))) %>%
+  group_by(orig.ident, threshold, type) %>%
+  summarize(ncells = n()) -> tmp
+
+ggplot(tmp, aes(x=threshold, y=ncells, colour=type))+
+	geom_line() + 
+  geom_vline(xintercept = ml, color = "blue", linetype = "dashed") + 
+  scale_x_continuous(breaks = seq(0, 40, by = 5)) +
+	labs(x="Thresholds for MT%", y="Number of Cells")+
+  facet_wrap(~orig.ident, nrow = 3, 
+             scales = "free_y")+
+  theme_classic()
+```
+
+
+Correlation between nCounts and nFeatures, colored by MT%
+
+- The number of gene features detected in a cell (nFeatures) tends to increase with library size (nCounts). Divergence from this correlation could indicate low-quality data, e.g. often observed in high MT% cells.
+
+```{r}
+ggplot(pbmc8k@meta.data, aes(x = nCount_RNA, y = nFeature_RNA, 
+                color = percent.mt))+
+	geom_point(size = 1)+
+	labs(x = "nCount", y = "nFeature", color = "MT%") +
+  theme_classic() +
+  geom_hline(yintercept = fl, 
+             color = "blue", linetype = "dashed") +
+  geom_vline(xintercept = cl,
+             color = "blue", linetype = "dashed")
+```
+
+
+### Do the filtering
+
+Pre
+
+```{r}
+nrow(pbmc8k@meta.data)
+```
+
+Filter 
+
+```{r, echo = T}
+pbmc8k.filt <- subset(pbmc8k, 
+                      nCount_RNA > cl &
+                        nFeature_RNA > fl & 
+                        percent.mt < ml)
+```
+
+Post
+
+```{r}
+nrow(pbmc8k.filt@meta.data)
+```
+
+Number of cells removed by filtering
+```{r}
+nrow(pbmc8k@meta.data) - nrow(pbmc8k.filt@meta.data)
+```
+
+
+## Final QC
+
+Seurat has a built-in function to plot the three key aspects of data quality that we need to check. Below we will explain each attribute and show how to generate similar plots using ggplot.
+```{r}
+VlnPlot(pbmc8k, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+VlnPlot(pbmc8k.filt, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+```
+
+Save the filtered seurat object as a R data object
+```{r}
+newfile <- file.path(intermeddir, "pbmc8k-filt.rds")
+#saveRDS(pbmc8k.filt, newfile)
+
+tools::md5sum(newfile)
+```
+
+## Session Info
+```{r echo=T}
+sessionInfo()
+print(paste("Start Time:  ",stdt))
+print(paste("End Time:  ",date()))
+```
+
